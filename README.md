@@ -3,7 +3,7 @@
 
 Data and R code for the scoping review:
 
-> Sankey C, Sheehan W, Caperchione CM, Wood LM, Menaspà P, Borg DN. **The measurement of sport-specific skill and collective behaviour in team invasion sport: A scoping review.** *Sports Medicine* (under review).
+> Sankey C, Sheehan W, Caperchione CM, Wood LM, Menaspà P, Borg DN. **The measurement of sport-specific skill and collective behaviour in team invasion sport: A scoping review.**
 
 Protocol registered on the Open Science Framework: <https://osf.io/2wu46/files/5cdfq>
 
