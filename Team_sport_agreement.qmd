@@ -1,0 +1,407 @@
+---
+title: "Team sport project: Data extraction agreement"
+author: "Sankey, Borg et al."
+date: today
+date-format: long
+number-sections: false
+format:
+  pdf:
+    geometry:
+    - top=2cm
+    - left=2.5cm
+    - right=2.5cm
+    - heightrounded
+    documentclass: article
+---
+
+```{r setup, message=FALSE, warning=FALSE, echo=FALSE}
+
+library(knitr)
+library(kableExtra)
+# readxl is only needed if you point path_v1 / path_v2 at .xlsx files
+
+# ---- Config -----------------------------------------------------------------
+
+path_v1 <- "data_validation_reviewer_1.csv"   # reviewer 1, first sheet
+path_v2 <- "data_validation_reviewer_2.csv"   # reviewer 2, first sheet
+
+label_v1 <- "reviewer 1"
+label_v2 <- "reviewer 2"
+
+id_col <- "key"                        # study identifier present in both files
+
+# Bibliographic / Rayyan-imported fields, not extracted variables.
+# Move a name out of here to include it in the agreement table.
+not_extraction <- c(
+  "row_id", "key", "person", "title", "source", "year", "journal",
+  "authors", "author_first", "abstract", "doi", "keywords", "notes",
+  "notes_1", "key_findings"
+)
+
+# Cells holding a comma-separated set, so order is ignored when comparing.
+multi_value_vars <- c(
+  "area", "sex", "study_context", "environmental_context",
+  "sport_specific_skill", "collective_behaviour",
+  "asessment_technology", "assessment_method"
+)
+
+# Both files use the same 37 columns, so nothing needs remapping. If a variable
+# is ever renamed or split between files, add a row here:
+#   label = name to report, col_v1 = its name in file 1, col_v2 = in file 2
+var_map <- data.frame(
+  label = character(0), col_v1 = character(0), col_v2 = character(0),
+  stringsAsFactors = FALSE
+)
+
+# Labels used in the results paragraph. Anything not listed here falls back to
+# the column name with underscores replaced by spaces.
+pretty_labels <- c(
+  asessment_technology   = "assessment technology",
+  assessment_described   = "assessment description",
+  female_n               = "number of female participants",
+  sport_specific_info    = "sport-specific information",
+  sport_specific_skill   = "sport-specific skill",
+  sample_size            = "sample size",
+  outcome_measure        = "outcome measure",
+  assessment_sample_size = "assessment sample size",
+  study_design           = "study design",
+  study_context          = "study context",
+  assessment_timeframe   = "assessment timeframe",
+  assessment_method      = "assessment method",
+  environmental_context  = "environmental context",
+  underpinning_theory    = "underpinning theory",
+  collective_behaviour   = "collective behaviour"
+)
+
+# TRUE adds the AC1 in brackets after each percentage in the paragraph
+include_ac1_in_paragraph <- FALSE
+
+# TRUE appends a closing sentence naming the free-text fields
+flag_free_text_in_paragraph <- TRUE
+
+paragraph_docx <- "agreement_paragraph.docx"
+
+ignore_case    <- TRUE
+missing_tokens <- c("", "na", "n/a", "none", "-", "--", ".")
+conf_level     <- 0.95
+
+# Prose fields. Two extractors writing the same thing in their own words will
+# almost never produce an identical string, so exact-match agreement is not a
+# meaningful reliability estimate for these. They are still computed, but are
+# flagged with an asterisk in the table.
+# sample_size is borderline ("45 athletes" vs "45 (4 teams)") - move it here if
+# you would rather treat it as free text.
+free_text_vars <- c(
+  "aim", "procedure", "sport_specific_info", "outcome_measure",
+  "assessment_sample_size", "assessment_described"
+)
+
+# Optional regex fix-ups applied to every cell before comparison, given as
+# c(pattern = replacement) and applied after lower-casing. Empty by default:
+# anything added here changes the reported agreement, so add sparingly and
+# report what was applied. The two below are the common cosmetic mismatches
+# in these files, commented out so the default result is the unadjusted one.
+value_fixups <- c(
+  # "^n *= *"   = "",       # "n = 12" and "12"
+  # "skills\\b" = "skill"   # "sport specific skills" and "sport specific skill"
+)
+
+# ---- Read -------------------------------------------------------------------
+
+# Names are cleaned here rather than with janitor::clean_names(). janitor
+# de-duplicates the two "notes" columns using their column *position*, which
+# differs between the two workbooks (32 vs 36 columns), so a name like notes_37
+# exists in neither file. make.unique() gives the same name in both.
+clean_nms <- function(x) {
+  x <- tolower(trimws(x))
+  x <- gsub("[^a-z0-9]+", "_", x)
+  x <- gsub("^_+|_+$", "", x)
+  make.unique(x, sep = "_")
+}
+
+read_extraction <- function(path) {
+  # Everything is read as text so that a numeric 20 and a typed "20" do not
+  # disagree on type alone. Takes .csv or .xlsx (first sheet).
+  if (grepl("\\.csv$", path, ignore.case = TRUE)) {
+    d <- utils::read.csv(path, colClasses = "character", check.names = FALSE,
+                         stringsAsFactors = FALSE, na.strings = character(0))
+  } else {
+    d <- readxl::read_xlsx(path, sheet = 1, col_types = "text")
+  }
+  names(d) <- clean_nms(names(d))
+  as.data.frame(d, stringsAsFactors = FALSE)
+}
+
+v1 <- read_extraction(path_v1)
+v2 <- read_extraction(path_v2)
+
+stopifnot(id_col %in% names(v1), id_col %in% names(v2))
+
+# ---- Normalise cell values --------------------------------------------------
+
+squish <- function(x) gsub("[[:space:]]+", " ", trimws(x))
+
+canonicalise <- function(x, multi = FALSE) {
+  x <- squish(as.character(x))
+  if (ignore_case) x <- tolower(x)
+  for (p in names(value_fixups)) x <- squish(gsub(p, value_fixups[[p]], x))
+  x[x %in% missing_tokens] <- NA_character_
+
+  # 20, 20.0 and " 20 " should not count as a disagreement
+  num <- suppressWarnings(as.numeric(x))
+  is_num <- !is.na(num)
+  x[is_num] <- as.character(num[is_num])
+
+  if (multi) {
+    x <- vapply(x, function(cell) {
+      if (is.na(cell)) return(NA_character_)
+      parts <- squish(strsplit(cell, ",", fixed = TRUE)[[1]])
+      parts <- parts[nzchar(parts)]
+      if (!length(parts)) return(NA_character_)
+      paste(sort(unique(parts)), collapse = ", ")
+    }, character(1), USE.NAMES = FALSE)
+  }
+  x
+}
+
+# ---- Gwet's AC1 -------------------------------------------------------------
+# Two raters, one rating each per subject. Gwet KL (2008) Br J Math Stat
+# Psychol 61:29-48.
+#   pa   = observed agreement
+#   pi_k = (times rater 1 used category k + times rater 2 used k) / 2n
+#   pe   = sum_k pi_k (1 - pi_k) / (q - 1)
+#   AC1  = (pa - pe) / (1 - pe)
+# SE is Gwet's linearisation estimator; the CI uses t with n - 1 df.
+#
+# Written out rather than called from irrCAC so the document renders with no
+# extra package and so the blank-handling is explicit. To cross-check a
+# variable against the package:  irrCAC::gwet.ac1.raw(cbind(a, b))$est
+
+gwet_ac1 <- function(x, y, conf_level = 0.95) {
+  out <- list(n = 0L, q = NA_integer_, pa = NA_real_, pe = NA_real_,
+              ac1 = NA_real_, se = NA_real_, lcl = NA_real_, ucl = NA_real_)
+  keep <- !is.na(x) & !is.na(y)
+  x <- as.character(x)[keep]
+  y <- as.character(y)[keep]
+  n <- length(x)
+  if (n == 0L) return(out)
+
+  cats <- sort(unique(c(x, y)))
+  q <- length(cats)
+  out$n <- n
+  out$q <- q
+
+  pa_i <- as.numeric(x == y)
+  pa <- mean(pa_i)
+  out$pa <- pa
+
+  # only one category in play: chance agreement is undefined, AC1 is 1
+  if (q == 1L) {
+    out$pe <- 0
+    out$ac1 <- 1
+    return(out)
+  }
+
+  # pi_ik = proportion of the two raters placing study i in category k
+  pi_ik <- matrix(0, nrow = n, ncol = q, dimnames = list(NULL, cats))
+  ix <- cbind(seq_len(n), match(x, cats))
+  iy <- cbind(seq_len(n), match(y, cats))
+  pi_ik[ix] <- pi_ik[ix] + 0.5
+  pi_ik[iy] <- pi_ik[iy] + 0.5
+
+  pi_k <- colMeans(pi_ik)
+  pe <- sum(pi_k * (1 - pi_k)) / (q - 1)
+  ac1 <- (pa - pe) / (1 - pe)
+  out$pe <- pe
+  out$ac1 <- ac1
+
+  if (n > 1L) {
+    pe_i <- (sum(pi_k) - as.vector(pi_ik %*% pi_k)) / (q - 1)
+    infl <- ((pa_i - pa) - 2 * (1 - ac1) * (pe_i - pe)) / (1 - pe)
+    se <- sqrt(sum(infl^2) / (n * (n - 1)))
+    tcrit <- stats::qt(1 - (1 - conf_level) / 2, df = n - 1)
+    out$se <- se
+    out$lcl <- max(-1, ac1 - tcrit * se)
+    out$ucl <- min(1, ac1 + tcrit * se)
+  }
+  out
+}
+
+# ---- Match the two files study by study -------------------------------------
+
+ids     <- intersect(v1[[id_col]], v2[[id_col]])
+only_v1 <- setdiff(v1[[id_col]], v2[[id_col]])
+only_v2 <- setdiff(v2[[id_col]], v1[[id_col]])
+
+v1m <- v1[match(ids, v1[[id_col]]), , drop = FALSE]
+v2m <- v2[match(ids, v2[[id_col]]), , drop = FALSE]
+
+# ---- Variables to compare ---------------------------------------------------
+
+shared <- setdiff(intersect(names(v1), names(v2)), not_extraction)
+spec <- rbind(
+  data.frame(label = shared, col_v1 = shared, col_v2 = shared,
+             stringsAsFactors = FALSE),
+  var_map
+)
+
+# ---- Compare ----------------------------------------------------------------
+
+compare_one <- function(label, col_v1, col_v2) {
+  multi <- label %in% multi_value_vars
+  a <- canonicalise(v1m[[col_v1]], multi)
+  b <- canonicalise(v2m[[col_v2]], multi)
+
+  both_obs <- !is.na(a) & !is.na(b)
+
+  # complete pairs only: both extractors recorded something
+  obs <- gwet_ac1(a, b, conf_level)
+
+  # blanks kept as a category of their own, so blank vs blank is agreement
+  blk <- gwet_ac1(ifelse(is.na(a), "<blank>", a),
+                  ifelse(is.na(b), "<blank>", b), conf_level)
+
+  d <- which(both_obs & a != b)
+
+  list(
+    summary = data.frame(
+      variable         = label,
+      n_double         = sum(both_obs),
+      n_one_blank      = sum(xor(is.na(a), is.na(b))),
+      n_both_blank     = sum(is.na(a) & is.na(b)),
+      pct_agree        = 100 * obs$pa,
+      ac1              = obs$ac1,
+      ac1_lcl          = obs$lcl,
+      ac1_ucl          = obs$ucl,
+      pct_agree_blanks = 100 * blk$pa,
+      ac1_blanks       = blk$ac1,
+      stringsAsFactors = FALSE
+    ),
+    disagreements = if (length(d)) data.frame(
+      variable   = label,
+      key        = ids[d],
+      reviewer_1 = v1m[[col_v1]][d],
+      reviewer_2 = v2m[[col_v2]][d],
+      stringsAsFactors = FALSE
+    ) else NULL
+  )
+}
+
+results <- Map(compare_one, spec$label, spec$col_v1, spec$col_v2)
+
+agreement <- do.call(rbind, lapply(results, `[[`, "summary"))
+agreement <- agreement[order(-agreement$pct_agree, agreement$variable), ]
+rownames(agreement) <- NULL
+
+disagreements <- do.call(rbind, lapply(results, `[[`, "disagreements"))
+if (is.null(disagreements)) {
+  disagreements <- data.frame(
+    variable = character(0), key = character(0),
+    reviewer_1 = character(0), reviewer_2 = character(0),
+    stringsAsFactors = FALSE
+  )
+}
+rownames(disagreements) <- NULL
+
+fmt <- function(x, d = 2) ifelse(is.na(x), "-", formatC(x, format = "f", digits = d))
+pct <- function(x) ifelse(is.na(x), "-", paste0(round(x), "%"))
+
+write.csv(agreement, "agreement_summary.csv", row.names = FALSE)
+write.csv(disagreements, "agreement_disagreements.csv", row.names = FALSE)
+
+# ---- Results paragraph ------------------------------------------------------
+
+label_for <- function(x) {
+  out <- unname(pretty_labels[x])
+  ifelse(is.na(out), gsub("_", " ", x), out)
+}
+
+items <- paste0(
+  label_for(agreement$variable), " ", round(agreement$pct_agree), "%",
+  if (include_ac1_in_paragraph) paste0(" (AC1 ", fmt(agreement$ac1), ")") else ""
+)
+
+para <- paste0(
+  "Data extraction agreement between the two reviewers was assessed across ",
+  nrow(agreement), " variables for ", length(ids),
+  " studies. Raw agreement was as follows: ",
+  paste(items, collapse = ", "), "."
+)
+
+if (flag_free_text_in_paragraph) {
+  ft <- label_for(intersect(agreement$variable, free_text_vars))
+  if (length(ft)) {
+    ft_list <- if (length(ft) > 1) {
+      paste0(paste(ft[-length(ft)], collapse = ", "), " and ", ft[length(ft)])
+    } else ft
+    para <- paste0(
+      para, " Agreement for ", ft_list,
+      " reflects exact matching of free-text responses and therefore",
+      " understates the extent to which the reviewers agreed in substance."
+    )
+  }
+}
+
+# Export to Word. officer if it is installed, otherwise pandoc via rmarkdown.
+# The plain-text version is always written, so nothing is lost either way.
+writeLines(para, sub("\\.docx$", ".md", paragraph_docx))
+docx_written <- FALSE
+
+if (requireNamespace("officer", quietly = TRUE)) {
+  officer::read_docx() |>
+    officer::body_add_par("Data extraction agreement", style = "heading 1") |>
+    officer::body_add_par(para, style = "Normal") |>
+    print(target = paragraph_docx)
+  docx_written <- TRUE
+} else if (requireNamespace("rmarkdown", quietly = TRUE) &&
+           rmarkdown::pandoc_available()) {
+  rmarkdown::pandoc_convert(
+    input  = normalizePath(sub("\\.docx$", ".md", paragraph_docx)),
+    to     = "docx",
+    output = paragraph_docx
+  )
+  docx_written <- TRUE
+}
+```
+
+# Data extraction agreement
+
+```{r agreement-table, echo=FALSE, warning=FALSE, message=FALSE}
+
+tab <- data.frame(
+  Variable        = ifelse(agreement$variable %in% free_text_vars,
+                           paste0(agreement$variable, "*"),
+                           agreement$variable),
+  n               = agreement$n_double,
+  `Raw agreement` = pct(agreement$pct_agree),
+  `Gwet's AC1`    = fmt(agreement$ac1),
+  `95% CI`        = ifelse(is.na(agreement$ac1_lcl), "-",
+                           paste0(fmt(agreement$ac1_lcl), " to ",
+                                  fmt(agreement$ac1_ucl))),
+  check.names = FALSE, stringsAsFactors = FALSE
+)
+
+kable(tab, align = "lrrrr", row.names = FALSE) |>
+  kable_styling(full_width = FALSE, latex_options = "hold_position")
+
+```
+
+\* Free-text field. Two reviewers describing the same study in their own words
+will rarely produce an identical string, so exact-match agreement understates
+reliability for these variables.
+
+# Results paragraph
+
+Text below is written to `r paragraph_docx` for pasting into the manuscript.
+
+```{r results-paragraph, echo=FALSE, warning=FALSE, message=FALSE, results='asis'}
+
+cat(para, "\n")
+
+if (!docx_written) {
+  cat("\n\n*(Word export skipped: install the officer package, or render from",
+      "RStudio so that pandoc is on the path. The text above was still written",
+      "to a .md file alongside this document.)*\n")
+}
+
+```
